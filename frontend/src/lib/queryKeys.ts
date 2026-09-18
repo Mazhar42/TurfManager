@@ -1,0 +1,16 @@
+export const queryKeys = {
+  availability: (fieldId: string, date: string) => ["availability", fieldId, date] as const,
+  fields: () => ["fields"] as const,
+  bookings: (filters: object) => ["bookings", filters] as const,
+  booking: (id: string) => ["booking", id] as const,
+  customers: (q: string) => ["customers", q] as const,
+  customer: (id: string) => ["customer", id] as const,
+  pricingRules: () => ["pricing-rules"] as const,
+  staff: () => ["staff"] as const,
+  dailyReport: (date: string) => ["report", "daily", date] as const,
+  monthlyReport: (month: string) => ["report", "monthly", month] as const,
+  outstanding: () => ["report", "outstanding"] as const,
+  todayCollections: () => ["report", "today-collections"] as const,
+  blockedSlots: () => ["blocked-slots"] as const,
+  venue: () => ["venue"] as const,
+};

@@ -1,0 +1,30 @@
+# Env
+.env
+!.env.example
+backend/.env
+
+# Backend (Python)
+backend/.venv/
+backend/**/__pycache__/
+backend/**/*.pyc
+backend/.pytest_cache/
+backend/.ruff_cache/
+*.egg-info/
+
+# Frontend (Node) — both PWAs
+frontend/node_modules/
+frontend/dist/
+frontend/dev-dist/
+frontend/.vite/
+frontend-owner/node_modules/
+frontend-owner/dist/
+frontend-owner/dev-dist/
+frontend-owner/.vite/
+
+# Editors / OS
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# Docker volumes are named volumes, not bind mounts — nothing to ignore there.

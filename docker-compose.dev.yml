@@ -1,0 +1,25 @@
+# Local development: just Postgres in a container. Run the backend with
+# `uv run uvicorn app.main:app --reload` and the frontend with `npm run dev` natively —
+# much faster iteration than rebuilding containers on every change.
+#
+# Usage: docker compose -f docker-compose.dev.yml up -d
+services:
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: turf
+      POSTGRES_PASSWORD: turf
+      POSTGRES_DB: turfmanager
+    ports:
+      - "5433:5432"  # 5432 is taken by another local project; the app connects on 5433
+    volumes:
+      - dev_db_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U turf"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  dev_db_data:

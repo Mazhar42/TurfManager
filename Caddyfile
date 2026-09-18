@@ -1,0 +1,37 @@
+{$DOMAIN:localhost} {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	handle /health {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		root * /srv/frontend
+		try_files {path} /index.html
+		file_server
+	}
+}
+
+# The owner/manager companion PWA — a separate origin so it installs as its own app,
+# distinct from the main staff/front-desk app above, on the same phone. Same backend.
+{$OWNER_DOMAIN:owner.localhost} {
+	encode gzip
+
+	handle /api/* {
+		reverse_proxy backend:8000
+	}
+
+	handle /health {
+		reverse_proxy backend:8000
+	}
+
+	handle {
+		root * /srv/frontend-owner
+		try_files {path} /index.html
+		file_server
+	}
+}
