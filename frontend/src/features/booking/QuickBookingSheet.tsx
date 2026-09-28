@@ -2,13 +2,14 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import { Sheet } from "@/components/ui/Sheet";
 import { Button } from "@/components/ui/Button";
 import { Input, Label, Select, FieldError } from "@/components/ui/Input";
+import { Badge, slotStateTone } from "@/components/ui/Badge";
 import { useToast } from "@/components/ui/Toast";
 import { api, ApiError } from "@/lib/api";
-import { useCreateBooking, useCustomers } from "@/lib/queries";
+import { useAvailability, useCreateBooking, useCustomers } from "@/lib/queries";
 import { formatMoney } from "@/lib/money";
-import { addMinutes, formatDayLabel, formatTimeRange } from "@/lib/datetime";
+import { addMinutes, formatDayLabel, formatTimeRange, todayStr } from "@/lib/datetime";
 import { cn } from "@/lib/utils";
-import type { Field, PaymentMethod } from "@/lib/types";
+import type { Field, PaymentMethod, Slot, SlotState } from "@/lib/types";
 
 interface FixedSlot {
   fieldId: string;
@@ -35,12 +36,48 @@ const METHODS: { value: PaymentMethod; label: string }[] = [
 
 const DURATIONS = [60, 90, 120];
 
+const SLOT_STATE_LABEL: Record<SlotState, string> = {
+  available: "Available",
+  booked: "Booked",
+  blocked: "Blocked",
+  past: "Past",
+};
+
+function toLocalDatePart(iso: string): string {
+  return iso.slice(0, 10);
+}
+
+function toMinutes(timeOrIso: string): number {
+  const hhmm = timeOrIso.includes("T") ? timeOrIso.slice(11, 16) : timeOrIso;
+  const [hours, minutes] = hhmm.split(":").map(Number);
+  return hours * 60 + minutes;
+}
+
+function summarizeSlotWindow(slots: Slot[], startsAt: string, endsAt: string): Slot | null {
+  const selectedDate = toLocalDatePart(startsAt);
+  const startMinutes = toMinutes(startsAt);
+  const endMinutes = toMinutes(endsAt);
+
+  const overlapping = slots.filter((slot) => {
+    if (toLocalDatePart(slot.starts_at) !== selectedDate) return false;
+    return toMinutes(slot.starts_at) < endMinutes && toMinutes(slot.ends_at) > startMinutes;
+  });
+
+  if (overlapping.length === 0) return null;
+  return (
+    overlapping.find((slot) => slot.state === "booked") ??
+    overlapping.find((slot) => slot.state === "blocked") ??
+    overlapping.find((slot) => slot.state === "past") ??
+    overlapping[0]
+  );
+}
+
 export function QuickBookingSheet({ open, onClose, fields, defaultDate, fixedSlot, onCreated }: QuickBookingSheetProps) {
   const { show } = useToast();
   const createBooking = useCreateBooking();
 
   const [fieldId, setFieldId] = useState(fixedSlot?.fieldId ?? fields[0]?.id ?? "");
-  const [date] = useState(defaultDate);
+  const [date, setDate] = useState(fixedSlot ? toLocalDatePart(fixedSlot.startsAt) : defaultDate);
   const [startTime, setStartTime] = useState("18:00");
   const [duration, setDuration] = useState(60);
 
@@ -57,10 +94,12 @@ export function QuickBookingSheet({ open, onClose, fields, defaultDate, fixedSlo
   const [error, setError] = useState<string | null>(null);
 
   const phoneQuery = useCustomers(phone.length >= 3 ? phone : "");
+  const availability = useAvailability(fieldId || undefined, date);
 
   useEffect(() => {
     if (!open) return;
     setFieldId(fixedSlot?.fieldId ?? fields[0]?.id ?? "");
+    setDate(fixedSlot ? toLocalDatePart(fixedSlot.startsAt) : defaultDate);
     setStartTime("18:00");
     setDuration(60);
     setPhone("");
@@ -72,7 +111,7 @@ export function QuickBookingSheet({ open, onClose, fields, defaultDate, fixedSlo
     setMethod("cash");
     setError(null);
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [open, fixedSlot?.startsAt, fixedSlot?.fieldId]);
+  }, [open, defaultDate, fixedSlot?.startsAt, fixedSlot?.fieldId]);
 
   const { startsAt, endsAt } = useMemo(() => {
     if (fixedSlot) return { startsAt: fixedSlot.startsAt, endsAt: fixedSlot.endsAt };
@@ -98,6 +137,13 @@ export function QuickBookingSheet({ open, onClose, fields, defaultDate, fixedSlo
         if (quoteRequestId.current === id) setPriceLoading(false);
       });
   }, [open, fieldId, startsAt, endsAt, priceTouched]);
+
+  const slotPreview = useMemo(() => {
+    if (fixedSlot || !availability.data) return null;
+    return summarizeSlotWindow(availability.data.slots, startsAt, endsAt);
+  }, [fixedSlot, availability.data, startsAt, endsAt]);
+
+  const slotUnavailable = !fixedSlot && !!slotPreview && slotPreview.state !== "available";
 
   const due = Math.max(0, Number(price || 0) - Number(advance || 0));
 
@@ -144,7 +190,7 @@ export function QuickBookingSheet({ open, onClose, fields, defaultDate, fixedSlo
       onClose={onClose}
       title="New booking"
       footer={
-        <Button className="w-full" size="lg" onClick={submit} disabled={createBooking.isPending}>
+        <Button className="w-full" size="lg" onClick={submit} disabled={createBooking.isPending || slotUnavailable}>
           {createBooking.isPending ? "Confirming…" : `Confirm booking${price ? ` · ${formatMoney(price)}` : ""}`}
         </Button>
       }
@@ -166,6 +212,10 @@ export function QuickBookingSheet({ open, onClose, fields, defaultDate, fixedSlo
                 ))}
               </Select>
             </div>
+            <div className="col-span-2">
+              <Label htmlFor="date">Booking date</Label>
+              <Input id="date" type="date" min={todayStr()} value={date} onChange={(e) => setDate(e.target.value)} />
+            </div>
             <div>
               <Label htmlFor="start">Start time</Label>
               <Input id="start" type="time" value={startTime} onChange={(e) => setStartTime(e.target.value)} />
@@ -180,6 +230,38 @@ export function QuickBookingSheet({ open, onClose, fields, defaultDate, fixedSlo
                 ))}
               </Select>
             </div>
+          </div>
+        )}
+
+        {!fixedSlot && (
+          <div className="rounded-xl border border-border bg-surface-raised px-3.5 py-3">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-sm font-medium text-text">{formatDayLabel(date)} · {startTime}</p>
+                <p className="text-xs text-text-muted">Status for this slot on the selected day</p>
+              </div>
+              {availability.isLoading ? (
+                <Badge tone="neutral">Checking…</Badge>
+              ) : slotPreview ? (
+                <Badge tone={slotStateTone[slotPreview.state]}>{SLOT_STATE_LABEL[slotPreview.state]}</Badge>
+              ) : (
+                <Badge tone="neutral">No slot found</Badge>
+              )}
+            </div>
+
+            {slotPreview?.state === "booked" && slotPreview.booking && (
+              <p className="mt-2 text-sm text-text-muted">
+                Already booked by <span className="font-medium text-text">{slotPreview.booking.customer_name}</span>.
+              </p>
+            )}
+
+            {slotPreview?.state === "blocked" && (
+              <p className="mt-2 text-sm text-text-muted">{slotPreview.blocked_reason || "This slot is blocked for bookings."}</p>
+            )}
+
+            {slotPreview?.state === "past" && (
+              <p className="mt-2 text-sm text-text-muted">This time has already passed for the selected day.</p>
+            )}
           </div>
         )}
 
