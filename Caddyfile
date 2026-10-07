@@ -1,5 +1,17 @@
-{$DOMAIN:localhost} {
-	encode gzip
+# Two sites, one backend. Caddy gets and renews HTTPS certificates for both domains
+# automatically — point both DNS names at the server before starting it.
+
+(common) {
+	encode zstd gzip
+
+	header {
+		Strict-Transport-Security "max-age=31536000; includeSubDomains"
+		X-Content-Type-Options "nosniff"
+		X-Frame-Options "DENY"
+		Referrer-Policy "strict-origin-when-cross-origin"
+		Permissions-Policy "camera=(), microphone=(), geolocation=()"
+		-Server
+	}
 
 	handle /api/* {
 		reverse_proxy backend:8000
@@ -8,30 +20,34 @@
 	handle /health {
 		reverse_proxy backend:8000
 	}
+}
 
+# Static-file rules for a Vite PWA: hashed assets are immutable, but the service worker,
+# manifest and index.html must always be revalidated or phones keep running an old build.
+(pwa) {
 	handle {
-		root * /srv/frontend
+		root * {args[0]}
+
+		@immutable path /assets/*
+		header @immutable Cache-Control "public, max-age=31536000, immutable"
+
+		@revalidate path / /index.html /sw.js /registerSW.js /manifest.webmanifest /workbox-*.js
+		header @revalidate Cache-Control "no-cache"
+
 		try_files {path} /index.html
 		file_server
 	}
 }
 
+# The main staff + owner operational app.
+{$DOMAIN:localhost} {
+	import common
+	import pwa /srv/frontend
+}
+
 # The owner/manager companion PWA — a separate origin so it installs as its own app,
 # distinct from the main staff/front-desk app above, on the same phone. Same backend.
 {$OWNER_DOMAIN:owner.localhost} {
-	encode gzip
-
-	handle /api/* {
-		reverse_proxy backend:8000
-	}
-
-	handle /health {
-		reverse_proxy backend:8000
-	}
-
-	handle {
-		root * /srv/frontend-owner
-		try_files {path} /index.html
-		file_server
-	}
+	import common
+	import pwa /srv/frontend-owner
 }

@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Phone, Receipt, Trash2 } from "lucide-react";
+import { CalendarClock, Phone, Receipt, Trash2 } from "lucide-react";
 import { useAuth } from "@/lib/auth";
 import { useToast } from "@/components/ui/Toast";
 import { Button } from "@/components/ui/Button";
@@ -7,10 +7,12 @@ import { Input, Label, Select } from "@/components/ui/Input";
 import { Skeleton } from "@/components/ui/Skeleton";
 import { BookingStatusBadge, PaymentStatusBadge } from "@/components/ui/Badge";
 import { useAddPayment, useBooking, useDeletePayment, useUpdateBookingStatus } from "@/lib/queries";
-import { formatDateTimeShort, formatDayLabel, formatTimeRange } from "@/lib/datetime";
+import { formatDateTimeShort, formatDayLabel, formatTimeRange, localDateOf } from "@/lib/datetime";
 import { formatMoney } from "@/lib/money";
 import { ApiError } from "@/lib/api";
 import { BOOKING_STATUS_TRANSITIONS, STATUS_ACTION_LABEL } from "@/features/bookings/statusTransitions";
+import { BookingHistory } from "@/features/bookings/BookingHistory";
+import { RescheduleForm } from "@/features/bookings/RescheduleForm";
 import type { BookingStatus, PaymentMethod } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -31,6 +33,7 @@ export function BookingDetailContent({ bookingId, onChanged }: { bookingId: stri
   const deletePaymentMutation = useDeletePayment();
 
   const [showPaymentForm, setShowPaymentForm] = useState(false);
+  const [showReschedule, setShowReschedule] = useState(false);
   const [amount, setAmount] = useState("");
   const [method, setMethod] = useState<PaymentMethod>("cash");
   const [error, setError] = useState<string | null>(null);
@@ -46,6 +49,7 @@ export function BookingDetailContent({ bookingId, onChanged }: { bookingId: stri
   }
 
   const nextStatuses = BOOKING_STATUS_TRANSITIONS[booking.status];
+  const canReschedule = booking.status === "pending" || booking.status === "confirmed";
 
   const handleStatus = async (status: BookingStatus) => {
     if (status === "cancelled" && !window.confirm("Cancel this booking? This frees up the slot.")) return;
@@ -102,7 +106,7 @@ export function BookingDetailContent({ bookingId, onChanged }: { bookingId: stri
           </div>
         </div>
         <p className="mt-3 text-sm text-text-muted">
-          {formatDayLabel(booking.starts_at.slice(0, 10), venue?.timezone)} · {formatTimeRange(booking.starts_at, booking.ends_at, venue?.timezone)}
+          {formatDayLabel(localDateOf(booking.starts_at, venue?.timezone), venue?.timezone)} · {formatTimeRange(booking.starts_at, booking.ends_at, venue?.timezone)}
         </p>
         {booking.notes && <p className="mt-2 rounded-lg bg-surface-raised px-3 py-2 text-sm text-text-muted">{booking.notes}</p>}
       </div>
@@ -124,8 +128,13 @@ export function BookingDetailContent({ bookingId, onChanged }: { bookingId: stri
         </div>
       </div>
 
-      {nextStatuses.length > 0 && (
+      {(nextStatuses.length > 0 || canReschedule) && (
         <div className="flex flex-wrap gap-2">
+          {canReschedule && (
+            <Button size="sm" variant="secondary" onClick={() => setShowReschedule((v) => !v)}>
+              <CalendarClock size={14} /> {showReschedule ? "Close" : "Reschedule"}
+            </Button>
+          )}
           {nextStatuses.map((s) => (
             <Button
               key={s}
@@ -138,6 +147,17 @@ export function BookingDetailContent({ bookingId, onChanged }: { bookingId: stri
             </Button>
           ))}
         </div>
+      )}
+
+      {showReschedule && canReschedule && (
+        <RescheduleForm
+          booking={booking}
+          timezone={venue?.timezone}
+          onDone={() => {
+            setShowReschedule(false);
+            onChanged?.();
+          }}
+        />
       )}
 
       <div>
@@ -208,6 +228,8 @@ export function BookingDetailContent({ bookingId, onChanged }: { bookingId: stri
           </ul>
         )}
       </div>
+
+      <BookingHistory events={booking.events ?? []} timezone={venue?.timezone} />
     </div>
   );
 }

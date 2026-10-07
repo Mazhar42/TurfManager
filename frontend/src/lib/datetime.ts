@@ -72,3 +72,19 @@ export function formatDateTimeShort(iso: string, tz: string = DEFAULT_TZ): strin
     timeZone: tz,
   }).format(new Date(iso));
 }
+
+/** The venue-local calendar date ("YYYY-MM-DD") of an API timestamp. API timestamps are
+ * UTC, so slicing the ISO string would give the wrong day for after-midnight bookings. */
+export function localDateOf(iso: string, tz: string = DEFAULT_TZ): string {
+  return new Intl.DateTimeFormat("en-CA", { year: "numeric", month: "2-digit", day: "2-digit", timeZone: tz }).format(
+    new Date(iso),
+  );
+}
+
+/** The venue-local wall-clock time ("HH:MM", 24h) of an API timestamp. */
+export function localTimeOf(iso: string, tz: string = DEFAULT_TZ): string {
+  const parts = new Intl.DateTimeFormat("en-GB", { hour: "2-digit", minute: "2-digit", hourCycle: "h23", timeZone: tz })
+    .formatToParts(new Date(iso));
+  const get = (type: string) => parts.find((p) => p.type === type)?.value ?? "00";
+  return `${get("hour")}:${get("minute")}`;
+}

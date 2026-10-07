@@ -3,22 +3,22 @@ two bookings from ever holding the same field at an overlapping time.
 """
 import threading
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, time, timezone
+from datetime import UTC, datetime, time
 
-import pytest
-from sqlalchemy import create_engine, text
-from sqlalchemy.exc import IntegrityError
+from psycopg import errors as pg_errors
+from sqlalchemy import text
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import sessionmaker
 
 
 def _dt(day, hour: int) -> datetime:
-    return datetime.combine(day, time(hour, 0), tzinfo=timezone.utc)
+    return datetime.combine(day, time(hour, 0), tzinfo=UTC)
 
 
 def test_raw_exclusion_constraint_allows_only_one_of_two_overlapping_inserts(engine, seeded, tomorrow):
     """Two independent sessions race to insert the same field/time. Postgres's GiST
     exclusion constraint — not application code — must let exactly one through."""
-    venue, field, owner = seeded["venue"], seeded["field"], seeded["owner"]
+    venue, field = seeded["venue"], seeded["field"]
     Session = sessionmaker(bind=engine, future=True)
 
     with engine.begin() as conn:
@@ -47,6 +47,13 @@ def test_raw_exclusion_constraint_allows_only_one_of_two_overlapping_inserts(eng
             results[idx] = "ok"
         except IntegrityError:
             session.rollback()
+            results[idx] = "conflict"
+        except OperationalError as exc:
+            # A true simultaneous race can surface as a deadlock rather than an exclusion
+            # violation — still a database-level rejection, which is what we're proving.
+            session.rollback()
+            if not isinstance(exc.orig, pg_errors.DeadlockDetected):
+                raise
             results[idx] = "conflict"
         finally:
             session.close()

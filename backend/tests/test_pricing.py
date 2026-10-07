@@ -1,11 +1,11 @@
-from datetime import date, datetime, time, timezone
+from datetime import UTC, date, datetime, time
 
 from app.models.pricing_rule import PricingRule
 from app.services.pricing import resolve_price
 
 
 def _dt(day, hour: int) -> datetime:
-    return datetime.combine(day, time(hour, 0), tzinfo=timezone.utc)
+    return datetime.combine(day, time(hour, 0), tzinfo=UTC)
 
 
 def test_weekday_vs_evening_rule_priority(db_session, seeded, tomorrow):

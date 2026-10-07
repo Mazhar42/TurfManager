@@ -1,4 +1,4 @@
-from datetime import date, datetime, time
+from datetime import datetime, time
 
 
 def _booking_payload(field_id, day, hour, price="1800.00", **overrides):
@@ -69,7 +69,7 @@ def test_illegal_status_transition_is_rejected(app_client, auth_headers, seeded,
     assert dead_end.status_code == 422
 
 
-def test_staff_cannot_access_owner_only_endpoints(app_client, auth_headers, seeded, db_session):
+def test_staff_cannot_access_owner_only_endpoints(app_client, auth_headers, seeded, db_session, tomorrow):
     from app.core.security import hash_password
     from app.models.user import User
 
@@ -96,6 +96,6 @@ def test_staff_cannot_access_owner_only_endpoints(app_client, auth_headers, seed
     field = seeded["field"]
     resp = app_client.post(
         "/api/v1/bookings", headers=staff_headers,
-        json=_booking_payload(field.id, date.today(), 13),
+        json=_booking_payload(field.id, tomorrow, 13),
     )
     assert resp.status_code == 201, resp.text

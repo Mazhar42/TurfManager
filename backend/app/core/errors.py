@@ -1,4 +1,6 @@
 """Stable error envelope shared by every endpoint, so clients branch on `code`, not prose."""
+import logging
+
 from fastapi import Request, status
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
@@ -72,6 +74,16 @@ class OverpaymentError(ApiError):
         )
 
 
+class TooManyAttemptsError(ApiError):
+    def __init__(self, retry_after_seconds: int):
+        super().__init__(
+            "TOO_MANY_ATTEMPTS",
+            "Too many failed login attempts. Please wait a few minutes and try again.",
+            status.HTTP_429_TOO_MANY_REQUESTS,
+            {"retry_after_seconds": retry_after_seconds},
+        )
+
+
 class DuplicatePhoneError(ApiError):
     def __init__(self):
         super().__init__("DUPLICATE_PHONE", "A user with this phone number already exists.", status.HTTP_409_CONFLICT)
@@ -93,6 +105,9 @@ async def validation_error_handler(request: Request, exc: RequestValidationError
 
 
 async def unhandled_error_handler(request: Request, exc: Exception) -> JSONResponse:
+    # The traceback itself is logged by RequestLogMiddleware; this only shapes the reply,
+    # which deliberately never includes str(exc).
+    logging.getLogger("turfmanager").error("Returning 500 for %s %s", request.method, request.url.path)
     return JSONResponse(
         status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
         content=_envelope("INTERNAL_ERROR", "Something went wrong on our end."),

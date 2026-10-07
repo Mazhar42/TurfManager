@@ -1,52 +1,98 @@
+# Production stack. On the server this file sits next to a filled-in `.env` (copied from
+# `.env.example`); the deploy workflow pulls prebuilt images from GHCR and runs
+# `deploy/deploy.sh`. See DEPLOYMENT.md.
+#
+# The `build:` entries let you build everything locally instead (`docker compose build`),
+# e.g. to try the production stack on your own machine before the first real deploy.
+name: turfmanager-prod
+
+x-logging: &logging
+  driver: json-file
+  options:
+    max-size: "10m"
+    max-file: "5"
+
+x-backend: &backend
+  image: ${IMAGE_REGISTRY:-ghcr.io/mazhar42}/turfmanager-backend:${IMAGE_TAG:-latest}
+  build: ./backend
+  logging: *logging
+  environment:
+    DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-turf}:${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}@db:5432/${POSTGRES_DB:-turfmanager}
+    JWT_SECRET: ${JWT_SECRET:?set JWT_SECRET in .env}
+    ENVIRONMENT: ${ENVIRONMENT:-production}
+    CORS_ORIGINS: ${CORS_ORIGINS:?set CORS_ORIGINS in .env}
+    ACCESS_TOKEN_EXPIRE_MINUTES: ${ACCESS_TOKEN_EXPIRE_MINUTES:-30}
+    REFRESH_TOKEN_EXPIRE_DAYS: ${REFRESH_TOKEN_EXPIRE_DAYS:-30}
+    LOG_LEVEL: ${LOG_LEVEL:-INFO}
+    SENTRY_DSN: ${SENTRY_DSN:-}
+    WEB_CONCURRENCY: ${WEB_CONCURRENCY:-2}
+
 services:
   db:
     image: postgres:16-alpine
     restart: unless-stopped
+    logging: *logging
     environment:
       POSTGRES_USER: ${POSTGRES_USER:-turf}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-turf}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?set POSTGRES_PASSWORD in .env}
       POSTGRES_DB: ${POSTGRES_DB:-turfmanager}
     volumes:
       - db_data:/var/lib/postgresql/data
     healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-turf}"]
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
       interval: 5s
       timeout: 5s
       retries: 10
-    ports:
-      - "5432:5432"
+    # No `ports:` on purpose — Postgres is only reachable from the other containers.
 
   backend:
-    build: ./backend
+    <<: *backend
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
-    environment:
-      DATABASE_URL: ${DATABASE_URL:-postgresql+psycopg://turf:turf@db:5432/turfmanager}
-      JWT_SECRET: ${JWT_SECRET:-change-me-in-production-please}
-      ENVIRONMENT: ${ENVIRONMENT:-production}
-      CORS_ORIGINS: ${CORS_ORIGINS:-["https://localhost"]}
-    command: >
-      sh -c "uv run alembic upgrade head &&
-             uv run uvicorn app.main:app --host 0.0.0.0 --port 8000"
     expose:
       - "8000"
 
-  caddy:
-    image: caddy:2-alpine
+  web:
+    image: ${IMAGE_REGISTRY:-ghcr.io/mazhar42}/turfmanager-web:${IMAGE_TAG:-latest}
+    build:
+      context: .
+      dockerfile: deploy/web/Dockerfile
     restart: unless-stopped
+    logging: *logging
     depends_on:
-      - backend
+      backend:
+        condition: service_healthy
+    environment:
+      DOMAIN: ${DOMAIN:?set DOMAIN in .env}
+      OWNER_DOMAIN: ${OWNER_DOMAIN:?set OWNER_DOMAIN in .env}
     ports:
       - "80:80"
       - "443:443"
+      - "443:443/udp"
     volumes:
-      - ./Caddyfile:/etc/caddy/Caddyfile
-      - ./frontend/dist:/srv/frontend:ro
-      - ./frontend-owner/dist:/srv/frontend-owner:ro
       - caddy_data:/data
       - caddy_config:/config
+
+  backup:
+    image: ${IMAGE_REGISTRY:-ghcr.io/mazhar42}/turfmanager-backup:${IMAGE_TAG:-latest}
+    build: ./deploy/backup
+    restart: unless-stopped
+    logging: *logging
+    depends_on:
+      db:
+        condition: service_healthy
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      POSTGRES_HOST: db
+      POSTGRES_USER: ${POSTGRES_USER:-turf}
+      POSTGRES_DB: ${POSTGRES_DB:-turfmanager}
+      TZ: ${BACKUP_TZ:-Asia/Dhaka}
+    volumes:
+      - ./backups:/backups
 
 volumes:
   db_data:

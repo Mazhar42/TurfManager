@@ -22,3 +22,4 @@ class BookingEvent(UUIDPk, Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
     booking: Mapped["Booking"] = relationship(back_populates="events")
+    actor: Mapped["User | None"] = relationship(lazy="joined", viewonly=True)

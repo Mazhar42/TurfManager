@@ -163,6 +163,29 @@ export function useUpdateBookingStatus() {
   });
 }
 
+export interface UpdateBookingInput {
+  starts_at?: string;
+  ends_at?: string;
+  field_id?: string;
+  price_amount?: string;
+  notes?: string;
+}
+
+/** Reschedule (time/field) and/or reprice a booking. The server re-checks the slot against
+ * the exclusion constraint and blocked slots, and records the change in the audit trail. */
+export function useUpdateBooking() {
+  const qc = useQueryClient();
+  return useMutation({
+    mutationFn: ({ id, ...input }: UpdateBookingInput & { id: string }) => api.patch<BookingDetail>(`/bookings/${id}`, input),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ["availability"] });
+      qc.invalidateQueries({ queryKey: ["bookings"] });
+      qc.invalidateQueries({ queryKey: ["booking"] });
+      qc.invalidateQueries({ queryKey: ["report"] });
+    },
+  });
+}
+
 export function useAddPayment() {
   const qc = useQueryClient();
   return useMutation({

@@ -1,0 +1,11 @@
+# Build context for deploy/web/Dockerfile (repo root). Keep it small and secret-free.
+.git/
+.github/
+.env
+.env.*
+backups/
+backend/
+**/node_modules/
+**/dist/
+**/dev-dist/
+**/.vite/

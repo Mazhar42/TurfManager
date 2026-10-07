@@ -1,10 +1,15 @@
 """Seed a demo venue so the PWA has something real to show.
 
 Run with:  uv run python -m scripts.seed
+
+Demo data only — it creates well-known logins (owner12345 / staff12345), so it refuses
+to run when ENVIRONMENT=production. Set up a real venue with `scripts.bootstrap` instead.
 """
+import sys
 import zoneinfo
 from datetime import date, datetime, time, timedelta
 
+from app.core.config import get_settings
 from app.core.security import hash_password
 from app.db.session import SessionLocal
 from app.models.booking import Booking
@@ -21,6 +26,8 @@ FRIDAY = [4]
 
 
 def run() -> None:
+    if get_settings().is_production:
+        sys.exit("Refusing to seed demo data (with public demo passwords) into production. Use scripts.bootstrap.")
     db = SessionLocal()
     try:
         existing = db.query(Venue).filter(Venue.slug == "his-turf").one_or_none()

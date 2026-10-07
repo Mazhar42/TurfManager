@@ -86,8 +86,27 @@ export interface Booking {
   payment_status: PaymentStatus;
 }
 
+export type BookingEventType =
+  | "created"
+  | "status_changed"
+  | "rescheduled"
+  | "repriced"
+  | "payment_recorded"
+  | "payment_deleted";
+
+export interface BookingEvent {
+  id: string;
+  event_type: BookingEventType;
+  from_status: string | null;
+  to_status: string | null;
+  payload: Record<string, unknown>;
+  actor_name: string | null;
+  created_at: string;
+}
+
 export interface BookingDetail extends Booking {
   payments: Payment[];
+  events: BookingEvent[];
 }
 
 export interface SlotBookingSummary {

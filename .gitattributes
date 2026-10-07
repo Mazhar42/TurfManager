@@ -1,0 +1,6 @@
+# Shell scripts and container config run on Linux — keep LF even on a Windows checkout
+# (core.autocrlf would otherwise turn them into CRLF and break `#!/bin/sh` inside images).
+*.sh        text eol=lf
+Caddyfile   text eol=lf
+Dockerfile  text eol=lf
+*.yml       text eol=lf

@@ -1,7 +1,17 @@
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import type { ReactNode } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import type { QueryClient } from "@tanstack/react-query";
 import { api, authEvents, tokenStore } from "@/lib/api";
 import type { CurrentUser, Venue } from "@/lib/types";
+
+/** Drop everything the previous user could see — the in-memory query cache and the
+ * service worker's offline copy of recent reads — so a shared front-desk phone never
+ * shows one login's data to the next. */
+function clearSessionData(queryClient: QueryClient) {
+  queryClient.clear();
+  if ("caches" in window) void caches.delete("turf-reads").catch(() => {});
+}
 
 interface AuthContextValue {
   user: CurrentUser | null;
@@ -18,6 +28,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const [user, setUser] = useState<CurrentUser | null>(null);
   const [venue, setVenue] = useState<Venue | null>(null);
   const [status, setStatus] = useState<"loading" | "authenticated" | "anonymous">("loading");
+  const queryClient = useQueryClient();
 
   const loadSession = useCallback(async () => {
     if (!tokenStore.getAccess()) {
@@ -43,13 +54,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   useEffect(() => {
     void loadSession();
     const onLogout = () => {
+      clearSessionData(queryClient);
       setUser(null);
       setVenue(null);
       setStatus("anonymous");
     };
     authEvents.addEventListener("logout", onLogout);
     return () => authEvents.removeEventListener("logout", onLogout);
-  }, [loadSession]);
+  }, [loadSession, queryClient]);
 
   const login = useCallback(
     async (phone: string, password: string) => {
@@ -66,13 +78,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
   const logout = useCallback(() => {
     const refresh_token = tokenStore.getRefresh();
     tokenStore.clear();
+    clearSessionData(queryClient);
     setUser(null);
     setVenue(null);
     setStatus("anonymous");
     if (refresh_token) {
       void api.post("/auth/logout", { refresh_token }).catch(() => {});
     }
-  }, []);
+  }, [queryClient]);
 
   const refreshVenue = useCallback(async () => {
     const v = await api.get<Venue>("/settings/venue");
