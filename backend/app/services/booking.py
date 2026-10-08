@@ -9,8 +9,9 @@ import zoneinfo
 from datetime import UTC, datetime
 from decimal import Decimal
 
+from psycopg import errors as pg_errors
 from sqlalchemy import text
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.orm import Session
 
 from app.core.errors import (
@@ -27,11 +28,26 @@ from app.models.enums import BOOKING_STATUS_TRANSITIONS, BookingStatus, PaymentD
 from app.models.field import Field
 from app.models.payment import Payment
 from app.models.venue import Venue
-from app.schemas.booking import BookingCreate, BookingDetail, BookingOut, BookingUpdate
+from app.schemas.booking import BookingCreate, BookingDetail, BookingEventOut, BookingOut, BookingUpdate
 from app.schemas.customer import CustomerOut
 from app.schemas.payment import PaymentOut
 from app.services import payments as payment_calc
 from app.services.pricing import resolve_price
+
+
+def _is_slot_conflict(exc: Exception) -> bool:
+    """Both ways PostgreSQL can reject the loser of a race for the same slot.
+
+    Usually it's an exclusion violation (an IntegrityError). But when two transactions
+    insert overlapping rows at the same instant, each waits on the other's uncommitted
+    row while checking the constraint, and Postgres resolves that by aborting one with a
+    deadlock error instead. Either way the slot belongs to the other booking.
+    """
+    if isinstance(exc, IntegrityError):
+        return True
+    return isinstance(exc, OperationalError) and isinstance(
+        exc.orig, pg_errors.DeadlockDetected | pg_errors.SerializationFailure
+    )
 
 
 def _get_or_create_customer(
@@ -47,9 +63,13 @@ def _get_or_create_customer(
     if existing:
         return existing
 
-    customer = Customer(venue_id=venue_id, name=name, phone=phone)
-    db.add(customer)
-    db.flush()
+    # Savepoint: two bookings for the same brand-new phone number can race here too.
+    try:
+        with db.begin_nested():
+            customer = Customer(venue_id=venue_id, name=name, phone=phone)
+            db.add(customer)
+    except IntegrityError:
+        customer = db.query(Customer).filter(Customer.venue_id == venue_id, Customer.phone == phone).one()
     return customer
 
 
@@ -62,7 +82,13 @@ def localize(venue: Venue, dt: datetime) -> datetime:
 
 
 def _assert_within_opening_hours(venue: Venue, starts_at: datetime, ends_at: datetime) -> None:
-    if starts_at.time() < venue.opens_at or ends_at.time() > venue.closes_at:
+    # Compare on the venue's wall clock: a client may send UTC (or any offset), and
+    # 14:00Z is 20:00 in Dhaka, not 14:00.
+    tz = zoneinfo.ZoneInfo(venue.timezone)
+    local_start, local_end = starts_at.astimezone(tz), ends_at.astimezone(tz)
+    if local_start.date() != local_end.date():
+        raise OutsideOpeningHoursError()
+    if local_start.time() < venue.opens_at or local_end.time() > venue.closes_at:
         raise OutsideOpeningHoursError()
 
 
@@ -137,7 +163,9 @@ def create_booking(
 
     try:
         db.flush()
-    except IntegrityError as exc:
+    except (IntegrityError, OperationalError) as exc:
+        if not _is_slot_conflict(exc):
+            raise
         db.rollback()
         conflict = get_conflicting_booking(db, data.field_id, starts_at, ends_at)
         details = {}
@@ -177,7 +205,9 @@ def create_booking(
     return booking
 
 
-def update_booking(db: Session, venue_id: uuid.UUID, booking_id: uuid.UUID, data: BookingUpdate) -> Booking:
+def update_booking(
+    db: Session, venue_id: uuid.UUID, booking_id: uuid.UUID, data: BookingUpdate, actor_id: uuid.UUID
+) -> Booking:
     booking = get_booking_or_404(db, venue_id, booking_id)
     venue = db.get(Venue, venue_id)
 
@@ -188,7 +218,22 @@ def update_booking(db: Session, venue_id: uuid.UUID, booking_id: uuid.UUID, data
     if new_starts >= new_ends:
         raise OutsideOpeningHoursError()
 
-    if data.starts_at or data.ends_at or data.field_id:
+    if data.field_id and data.field_id != booking.field_id:
+        field = db.get(Field, data.field_id)
+        if not field or field.venue_id != venue_id:
+            raise NotFoundError("Field")
+
+    moved = new_starts != booking.starts_at or new_ends != booking.ends_at or new_field != booking.field_id
+    repriced = data.price_amount is not None and data.price_amount != booking.price_amount
+    before = {
+        "starts_at": booking.starts_at.isoformat(),
+        "ends_at": booking.ends_at.isoformat(),
+        "field_id": str(booking.field_id),
+        "price_amount": str(booking.price_amount),
+    }
+
+    if moved:
+        _assert_within_opening_hours(venue, new_starts, new_ends)
         _assert_not_blocked(db, new_field, new_starts, new_ends)
         conflict = get_conflicting_booking(db, new_field, new_starts, new_ends)
         if conflict and conflict.id != booking.id:
@@ -204,9 +249,27 @@ def update_booking(db: Session, venue_id: uuid.UUID, booking_id: uuid.UUID, data
 
     try:
         db.flush()
-    except IntegrityError as exc:
+    except (IntegrityError, OperationalError) as exc:
+        if not _is_slot_conflict(exc):
+            raise
         db.rollback()
         raise SlotTakenError() from exc
+
+    if moved or repriced:
+        after = {
+            "starts_at": booking.starts_at.isoformat(),
+            "ends_at": booking.ends_at.isoformat(),
+            "field_id": str(booking.field_id),
+            "price_amount": str(booking.price_amount),
+        }
+        db.add(
+            BookingEvent(
+                booking_id=booking.id,
+                actor_user_id=actor_id,
+                event_type="rescheduled" if moved else "repriced",
+                payload={"before": before, "after": after},
+            )
+        )
 
     db.commit()
     db.refresh(booking)
@@ -315,4 +378,17 @@ def to_booking_detail(booking: Booking) -> BookingDetail:
     return BookingDetail(
         **base.model_dump(),
         payments=[PaymentOut.model_validate(p) for p in sorted(booking.payments, key=lambda p: p.received_at)],
+        events=[
+            BookingEventOut(
+                id=e.id,
+                event_type=e.event_type,
+                from_status=e.from_status,
+                to_status=e.to_status,
+                payload=e.payload or {},
+                actor_name=e.actor.name if e.actor else None,
+                created_at=e.created_at,
+            )
+            # Events written in one transaction share a now() timestamp — keep "created" first.
+            for e in sorted(booking.events, key=lambda e: (e.created_at, e.event_type != "created"))
+        ],
     )

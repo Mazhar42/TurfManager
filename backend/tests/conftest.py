@@ -1,13 +1,15 @@
 import os
 import uuid
-from datetime import date, time, timedelta
+from datetime import date, datetime, time, timedelta
+from zoneinfo import ZoneInfo
 
 import pytest
-from alembic import command
 from alembic.config import Config
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine, text
 from sqlalchemy.orm import sessionmaker
+
+from alembic import command
 
 os.environ.setdefault(
     "DATABASE_URL", "postgresql+psycopg://turf:turf@localhost:5433/turfmanager_test"
@@ -116,4 +118,5 @@ def auth_headers(app_client, seeded):
 
 @pytest.fixture()
 def tomorrow() -> date:
-    return date.today() + timedelta(days=1)
+    # Venue-local, not the machine's local date: CI runs in UTC, the venue in Asia/Dhaka.
+    return datetime.now(ZoneInfo("Asia/Dhaka")).date() + timedelta(days=1)

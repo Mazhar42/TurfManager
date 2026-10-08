@@ -29,19 +29,24 @@ There are **two PWAs**, both talking to the same backend:
 - **Frontend(s)** — React 19, Vite, TypeScript, Tailwind CSS v4, TanStack Query, Recharts,
   `vite-plugin-pwa`. Mobile-first, installable, dark mode. `frontend-owner/` is the same
   stack, deliberately kept lighter (no forms/mutation libraries — it has no writes).
-- **Deploy** — Docker Compose (Postgres + backend + Caddy serving both built frontends,
-  each on its own domain, both reverse-proxying `/api` to the same backend).
+- **Deploy** — Docker Compose on a VPS (Postgres + backend + Caddy serving both built
+  frontends on their own domains + a nightly backup job). Images are built by GitHub Actions
+  and pushed to GHCR; deploys are manual, one click. See **[DEPLOYMENT.md](DEPLOYMENT.md)**.
 
 ## Project layout
 
 ```
-backend/         FastAPI app — app/{models,schemas,services,api/v1}, alembic/, tests/, scripts/seed.py
+backend/         FastAPI app — app/{models,schemas,services,api/v1}, alembic/, tests/,
+                 scripts/seed.py (demo data, dev only), scripts/bootstrap.py (real venue, production)
 frontend/        Staff + owner operational PWA — src/{app,features,components,lib}
 frontend-owner/  Owner/manager read-only companion PWA — same shape, smaller surface
-docker-compose.yml       production stack (Postgres + backend + Caddy, both frontends)
+deploy/          deploy.sh / restore.sh (run on the server), web/ (Caddy + both PWAs image),
+                 backup/ (nightly pg_dump + optional off-site copy image)
+.github/workflows/  ci.yml (every push/PR), deploy.yml (manual: publish images + deploy to VPS)
+docker-compose.yml       production stack — see DEPLOYMENT.md
 docker-compose.dev.yml   local dev: just Postgres in a container
 Caddyfile                reverse proxy config — two site blocks, one per frontend
-.env.example             copy to .env before deploying
+.env.example             production settings template (the server's .env)
 ```
 
 ## Local development
@@ -77,13 +82,17 @@ uv run python -m scripts.seed        # demo venue, fields, pricing, bookings, cu
 uv run uvicorn app.main:app --reload --port 8010
 ```
 
-`backend/.env`:
+`backend/.env` (this is exactly `backend/.env.example`):
 
 ```
 DATABASE_URL=postgresql+psycopg://turf:turf@localhost:5433/turfmanager
 JWT_SECRET=dev-secret-not-for-production
 ENVIRONMENT=development
 ```
+
+With `ENVIRONMENT=development` the interactive API docs are at
+`http://localhost:8010/api/v1/docs` and the schema at `/api/v1/openapi.json` (both are
+switched off in production).
 
 Seeded logins: **owner** `01700000000` / `owner12345`, **staff** `01711111111` /
 `staff12345`.
@@ -134,27 +143,20 @@ ports, hitting the same API.
 
 ## Production deploy
 
-```bash
-cp .env.example .env   # fill in real DATABASE_URL, JWT_SECRET, CORS_ORIGINS, DOMAIN, OWNER_DOMAIN
-cd frontend && npm run build && cd ../frontend-owner && npm run build && cd ..
-docker compose up -d --build
-```
+Everything — VPS setup, GitHub secrets, first deploy, creating the real venue, rollbacks,
+backups and restores — is in **[DEPLOYMENT.md](DEPLOYMENT.md)**. In short:
 
-Compose brings up Postgres, runs Alembic migrations, starts the API, and serves **both**
-built frontends through Caddy on their own domains — `DOMAIN` (the main app) and
-`OWNER_DOMAIN` (the companion app), each with automatic HTTPS and each reverse-proxying
-`/api` to the same backend. Point both DNS names at the server before starting Caddy, or
-it can't issue certificates. Seed the production database the same way as dev, against
-the container:
-
-```bash
-docker compose exec backend uv run python -m scripts.seed
-```
-
-Two separate origins is deliberate, not incidental — a PWA's installability, icon and
-manifest are scoped to its origin, so this is what lets an owner install "Turf Manager"
-and "Turf Owner" as two distinct icons on the same home screen instead of one
-overwriting the other.
+- **CI** ([`.github/workflows/ci.yml`](.github/workflows/ci.yml)) runs on every push and PR:
+  ruff + pytest against real PostgreSQL, lint + type-check + build of both PWAs, ShellCheck,
+  and a build of all three production images.
+- **Deploy** ([`.github/workflows/deploy.yml`](.github/workflows/deploy.yml)) is manual
+  (*Actions → Deploy → Run workflow*): CI again → images pushed to GHCR tagged with the
+  commit SHA → `deploy/deploy.sh` on the VPS over SSH (pull, migrate, restart, wait for
+  health) → smoke test of both domains.
+- Two separate origins is deliberate, not incidental — a PWA's installability, icon and
+  manifest are scoped to its origin, so this is what lets an owner install "Turf Manager"
+  and "Turf Owner" as two distinct icons on the same home screen instead of one
+  overwriting the other.
 
 ## Notes for whoever picks this up next
 
@@ -172,6 +174,16 @@ overwriting the other.
   `/auth/*`). If it ever needs a write (e.g. approving something from the phone), add the
   mutation deliberately and re-examine whether it still belongs in this app or in
   `frontend/` — don't let it drift into a second copy of the full app by accretion.
+- **Concurrency**: when two bookings race for the same slot, Postgres rejects the loser
+  either with an exclusion violation *or* (under a true simultaneous insert) a deadlock
+  error. `_is_slot_conflict()` in `services/booking.py` maps both to `409 SLOT_TAKEN`;
+  `test_many_simultaneous_bookings_never_500` keeps it that way.
+- **Audit trail**: every create / status change / reschedule / reprice / payment writes a
+  `booking_events` row with the acting user; `GET /bookings/{id}` returns them as `events`
+  and the booking detail screen shows them as History.
+- **Production guard rails**: the API refuses to start with `ENVIRONMENT=production` and a
+  placeholder `JWT_SECRET` or localhost CORS origins; `scripts.seed` refuses to run in
+  production; failed logins are throttled per phone number and per IP (`429 TOO_MANY_ATTEMPTS`).
 - Full build plan and rationale: see the original plan this repo was built from if you
   still have it (`~/.claude/plans/`), or read the module docstrings — `booking.py`,
   `payments.py` and the `bookings` migration explain the "why" inline rather than in a

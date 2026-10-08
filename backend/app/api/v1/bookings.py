@@ -1,12 +1,15 @@
 import uuid
+import zoneinfo
 from datetime import date, datetime, timedelta
 
 from fastapi import APIRouter, Depends, Header, Query
+from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.deps import get_current_user, get_current_venue, require_owner
 from app.db.session import get_db
 from app.models.booking import Booking
+from app.models.customer import Customer
 from app.models.enums import BookingStatus, PaymentStatus
 from app.models.user import User
 from app.models.venue import Venue
@@ -47,13 +50,19 @@ def list_bookings(
         Booking.venue_id == venue.id
     )
 
+    # Day boundaries are the venue's midnight, not UTC's — a 00:30 Dhaka booking is "today".
+    tz = zoneinfo.ZoneInfo(venue.timezone)
+
+    def local_midnight(d: date) -> datetime:
+        return datetime.combine(d, datetime.min.time(), tzinfo=tz)
+
     if day:
-        start = datetime.combine(day, datetime.min.time())
-        query = query.filter(Booking.starts_at >= start, Booking.starts_at < start + timedelta(days=1))
+        start = local_midnight(day)
+        query = query.filter(Booking.starts_at >= start, Booking.starts_at < local_midnight(day + timedelta(days=1)))
     if date_from:
-        query = query.filter(Booking.starts_at >= datetime.combine(date_from, datetime.min.time()))
+        query = query.filter(Booking.starts_at >= local_midnight(date_from))
     if date_to:
-        query = query.filter(Booking.starts_at < datetime.combine(date_to, datetime.min.time()) + timedelta(days=1))
+        query = query.filter(Booking.starts_at < local_midnight(date_to + timedelta(days=1)))
     if status_filter:
         query = query.filter(Booking.status == status_filter)
     if customer_id:
@@ -61,14 +70,13 @@ def list_bookings(
     if field_id:
         query = query.filter(Booking.field_id == field_id)
 
-    bookings = query.order_by(Booking.starts_at.desc()).limit(500).all()
+    if q and q.strip():
+        needle = f"%{q.strip()}%"
+        query = query.join(Customer, Booking.customer_id == Customer.id).filter(
+            or_(Customer.name.ilike(needle), Customer.phone.ilike(needle))
+        )
 
-    if q:
-        needle = q.strip().lower()
-        bookings = [
-            b for b in bookings
-            if b.customer and (needle in b.customer.name.lower() or needle in b.customer.phone.lower())
-        ]
+    bookings = query.order_by(Booking.starts_at.desc()).limit(500).all()
 
     results = [booking_service.to_booking_out(b) for b in bookings]
     if payment_status:
@@ -93,9 +101,9 @@ def update_booking(
     payload: BookingUpdate,
     db: Session = Depends(get_db),
     venue: Venue = Depends(get_current_venue),
-    _user: User = Depends(get_current_user),
+    user: User = Depends(get_current_user),
 ) -> BookingDetail:
-    booking = booking_service.update_booking(db, venue.id, booking_id, payload)
+    booking = booking_service.update_booking(db, venue.id, booking_id, payload, user.id)
     return booking_service.to_booking_detail(booking)
 
 

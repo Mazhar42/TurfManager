@@ -62,5 +62,16 @@ class BookingOut(ORMModel):
     payment_status: PaymentStatus
 
 
+class BookingEventOut(BaseModel):
+    id: uuid.UUID
+    event_type: str  # created | status_changed | rescheduled | repriced | payment_recorded | payment_deleted
+    from_status: str | None
+    to_status: str | None
+    payload: dict
+    actor_name: str | None
+    created_at: datetime
+
+
 class BookingDetail(BookingOut):
     payments: list[PaymentOut]
+    events: list[BookingEventOut] = Field(default_factory=list)

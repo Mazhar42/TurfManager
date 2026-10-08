@@ -1,11 +1,12 @@
 from datetime import UTC, datetime, timedelta
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Request
 from sqlalchemy.orm import Session
 
 from app.core.config import get_settings
 from app.core.deps import get_current_user
-from app.core.errors import InvalidCredentialsError, InvalidTokenError
+from app.core.errors import InvalidCredentialsError, InvalidTokenError, TooManyAttemptsError
+from app.core.ratelimit import FailureLimiter
 from app.core.security import (
     create_access_token,
     create_refresh_token,
@@ -20,6 +21,15 @@ from app.schemas.auth import LoginRequest, RefreshRequest, TokenPair, UserOut
 
 router = APIRouter(prefix="/auth", tags=["auth"])
 settings = get_settings()
+login_limiter = FailureLimiter(settings.login_max_failures, settings.login_failure_window_minutes * 60)
+
+
+def _client_ip(request: Request) -> str:
+    # Behind Caddy, the real client is the first X-Forwarded-For hop.
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    if forwarded:
+        return forwarded.split(",")[0].strip()
+    return request.client.host if request.client else "unknown"
 
 
 def _issue_tokens(db: Session, user: User) -> TokenPair:
@@ -38,10 +48,17 @@ def _issue_tokens(db: Session, user: User) -> TokenPair:
 
 
 @router.post("/login", response_model=TokenPair)
-def login(payload: LoginRequest, db: Session = Depends(get_db)) -> TokenPair:
+def login(payload: LoginRequest, request: Request, db: Session = Depends(get_db)) -> TokenPair:
+    keys = (f"phone:{payload.phone}", f"ip:{_client_ip(request)}")
+    wait = login_limiter.retry_after(*keys)
+    if wait:
+        raise TooManyAttemptsError(wait)
+
     user = db.query(User).filter(User.phone == payload.phone).one_or_none()
     if not user or not user.is_active or not verify_password(payload.password, user.password_hash):
+        login_limiter.record_failure(*keys)
         raise InvalidCredentialsError()
+    login_limiter.reset(keys[0])
     return _issue_tokens(db, user)
 
 
